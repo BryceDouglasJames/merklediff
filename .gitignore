@@ -1,0 +1,35 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+
+# Output directories
+build/
+dist/
+bin/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Go modules & vendoring
+vendor/
+
+# Coverage, profiling, and debug
+coverage.*
+coverage/
+*.cover
+*.coverprofile
+*.pprof
+
+# Logs
+*.log
