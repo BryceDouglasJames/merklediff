@@ -69,3 +69,15 @@ func (n *MerkleNode) SetRight(right *MerkleNode) {
 func (n *MerkleNode) SetLevel(level int) {
 	n.level = level
 }
+
+func (n *MerkleNode) GetChunkSize() int {
+	return len(n.startKey)
+}
+
+func (n *MerkleNode) IsLeaf() bool {
+	return n.left == nil && n.right == nil
+}
+
+func (n *MerkleNode) IsInternal() bool {
+	return n.left != nil && n.right != nil
+}

@@ -100,3 +100,9 @@ func recursivePrint(node *MerkleNode) string {
 
 	return current + recursivePrint(node.GetLeft()) + recursivePrint(node.GetRight())
 }
+
+func (t *MerkleTree) GetChunkSize() int {
+	return t.root.GetChunkSize()
+}
+
+
