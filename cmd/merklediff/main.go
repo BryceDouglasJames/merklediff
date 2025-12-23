@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/BryceDouglasJames/merklediff/cmd/merklediff/internal"
+	"github.com/BryceDouglasJames/merklediff/internal"
 	"github.com/BryceDouglasJames/merklediff/pkg/tree"
 )
 
