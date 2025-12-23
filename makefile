@@ -19,4 +19,4 @@ build-windows:
 build-all: build-linux build-mac build-windows
 
 run:
-	./build/merklediff
+	go run ./cmd/merklediff
