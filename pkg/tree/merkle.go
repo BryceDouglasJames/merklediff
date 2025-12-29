@@ -3,21 +3,40 @@ package tree
 import (
 	"encoding/hex"
 	"fmt"
+
+	itree "github.com/BryceDouglasJames/merklediff/internal/tree"
+	"github.com/BryceDouglasJames/merklediff/pkg/types"
+)
+
+type (
+	Row       = types.Row
+	RowReader = types.RowReader
 )
 
 type MerkleTree struct {
-	root *MerkleNode
+	root        *MerkleNode
+	nodeBuilder *itree.NodeBuilder
 }
 
 func NewMerkleTree(root *MerkleNode) *MerkleTree {
-	return &MerkleTree{root: root}
+	return &MerkleTree{root: root, nodeBuilder: itree.NewNodeBuilder()}
 }
 
-// NewMerkleTreeFromChunks builds a Merkle tree from the provided leaf chunks.
-// It returns a MerkleTree whose root may be nil if no chunks are provided.
+// NewMerkleTreeFromRows builds a Merkle tree from typed rows.
+// Each row's Values are serialized consistently before hashing.
+// This is the preferred constructor for data source rows.
+func NewMerkleTreeFromRows(rows []Row) *MerkleTree {
+	nodeBuilder := itree.NewNodeBuilder()
+	root := buildTreeFromRows(rows, nodeBuilder)
+	return &MerkleTree{root: root, nodeBuilder: nodeBuilder}
+}
+
+// NewMerkleTreeFromChunks builds a Merkle tree from raw byte chunks.
+// Keys are auto-generated as "chunk-0", "chunk-1", etc.
+// Use NewMerkleTreeFromRows when you have keyed data.
 func NewMerkleTreeFromChunks(chunks [][]byte) *MerkleTree {
 	root := buildTreeFromChunks(chunks)
-	return &MerkleTree{root: root}
+	return &MerkleTree{root: root, nodeBuilder: itree.NewNodeBuilder()}
 }
 
 func (t *MerkleTree) GetRoot() *MerkleNode {
@@ -33,7 +52,27 @@ func (t *MerkleTree) String() string {
 	return recursivePrint(t.root)
 }
 
-// buildTreeFromChunks constructs the Merkle tree structure and returns the root node.
+// buildTreeFromRows constructs the Merkle tree from typed rows.
+func buildTreeFromRows(rows []Row, nodeBuilder *itree.NodeBuilder) *MerkleNode {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	nodes := make([]*MerkleNode, len(rows))
+
+	// Leaf nodes (level 0) - serialize values for hashing
+	for i, row := range rows {
+		// Serialize typed values to bytes for consistent hashing
+		serializedValue := nodeBuilder.SerializeRowValues(row.Values)
+		nodes[i] = NewNode(serializedValue, row.Key, row.Key)
+		nodes[i].SetLevel(0)
+	}
+
+	// Build the tree level by level
+	return buildTreeLevels(nodes)
+}
+
+// buildTreeFromChunks constructs the Merkle tree from raw chunks.
 func buildTreeFromChunks(chunks [][]byte) *MerkleNode {
 	if len(chunks) == 0 {
 		return nil
@@ -41,7 +80,7 @@ func buildTreeFromChunks(chunks [][]byte) *MerkleNode {
 
 	nodes := make([]*MerkleNode, len(chunks))
 
-	// Leaf nodes (level 0)
+	// Leaf nodes (level 0) - auto-generate keys
 	for i, chunk := range chunks {
 		key := []byte(fmt.Sprintf("chunk-%d", i))
 		nodes[i] = NewNode(chunk, key, key)
@@ -49,6 +88,11 @@ func buildTreeFromChunks(chunks [][]byte) *MerkleNode {
 	}
 
 	// Build the tree level by level
+	return buildTreeLevels(nodes)
+}
+
+// buildTreeLevels builds the tree from leaf nodes upward.
+func buildTreeLevels(nodes []*MerkleNode) *MerkleNode {
 	for len(nodes) > 1 {
 		nextLevel := make([]*MerkleNode, 0, (len(nodes)+1)/2)
 
@@ -102,7 +146,61 @@ func recursivePrint(node *MerkleNode) string {
 }
 
 func (t *MerkleTree) GetChunkSize() int {
+	if t.root == nil {
+		return 0
+	}
 	return t.root.GetChunkSize()
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Builder Functions
+// ────────────────────────────────────────────────────────────────────────────
 
+// BuildTreeFromReader builds a Merkle tree by iterating through a RowReader.
+// This streams rows without loading everything into memory first.
+// For very large datasets, consider using StreamingTreeBuilder.
+func BuildTreeFromReader(r RowReader) (*MerkleTree, error) {
+	nodeBuilder := itree.NewNodeBuilder()
+	var nodes []*MerkleNode
+
+	for r.Next() {
+		row := r.Row()
+		serializedValue := nodeBuilder.SerializeRowValues(row.Values)
+		node := NewNode(serializedValue, row.Key, row.Key)
+		node.SetLevel(0)
+		nodes = append(nodes, node)
+	}
+
+	if err := r.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(nodes) == 0 {
+		return &MerkleTree{root: nil, nodeBuilder: nodeBuilder}, nil
+	}
+
+	root := buildTreeLevels(nodes)
+	return &MerkleTree{root: root, nodeBuilder: nodeBuilder}, nil
+}
+
+// StreamingTreeBuilder builds a Merkle tree incrementally.
+// Use this for very large datasets where collecting all leaf nodes
+// doesn't fit in memory.
+// TODO: Implement this
+//
+// type StreamingTreeBuilder struct {
+// 	internal *itree.StreamingBuilder
+// 	nodes    []*MerkleNode
+// }
+//
+// func NewStreamingTreeBuilder(batchSize int) *StreamingTreeBuilder {
+// 	return &StreamingTreeBuilder{
+// 		internal: itree.NewStreamingBuilder(batchSize),
+// 	}
+// }
+//
+// Requirements:
+// - Batch-based leaf node construction with proper key ranges
+// - Flush partial batches in Build()
+// - Error handling in AddRow()
+// - Sorted input validation
