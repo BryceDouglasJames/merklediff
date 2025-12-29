@@ -18,5 +18,8 @@ build-windows:
 
 build-all: build-linux build-mac build-windows
 
+lc:
+	find . -name "*.go" | xargs wc -l
+
 run:
 	go run ./cmd/merklediff

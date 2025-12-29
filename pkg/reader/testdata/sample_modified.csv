@@ -8,7 +8,6 @@ id,name,email,department,salary,start_date,active
 7,Grace,grace@company.com,Engineering,82000,2019-11-20,true
 8,Henry,henry@company.com,Engineering,92000,2020-07-08,true
 9,Ivy,ivy@company.com,Marketing,71000,2021-04-30,true
-10,Jack,jack@company.com,Finance,85000,2019-08-15,true
 11,Karen,karen@company.com,Engineering,102000,2020-05-12,true
 12,Leo,leo@company.com,Sales,69000,2022-03-01,true
 13,Mia,mia@company.com,HR,62000,2021-09-18,true
