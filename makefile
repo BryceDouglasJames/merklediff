@@ -8,13 +8,13 @@ test:
 	go test ./...
 
 build-linux:
-	go build -o ./build/merklediff-linux-amd64 ./cmd/merklediff
+	go build -o ./build/linux/merklediff ./cmd/merklediff
 
 build-mac:
-	go build -o ./build/merklediff-darwin-amd64 ./cmd/merklediff
+	go build -o ./build/macos/merklediff ./cmd/merklediff
 
 build-windows:
-	go build -o ./build/merklediff-windows-amd64.exe ./cmd/merklediff
+	go build -o ./build/windows/merklediff.exe ./cmd/merklediff
 
 build-all: build-linux build-mac build-windows
 
