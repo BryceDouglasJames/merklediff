@@ -13,13 +13,22 @@ import (
 	"github.com/BryceDouglasJames/merklediff/pkg/tree"
 )
 
+// Build info
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 var (
 	// CLI flags
 	keyColumns []int
 	outputJSON bool
+	outputFile string
 	quiet      bool
 	verbose    bool
 	exitZero   bool
+	limit      int
 )
 
 func main() {
@@ -40,7 +49,8 @@ Examples:
   merklediff data_v1.csv data_v2.csv
   merklediff --key 0 users.csv users_updated.csv
   merklediff --key 0,1 --json sales.csv sales_new.csv
-  merklediff --exit-zero --json a.csv b.csv`,
+  merklediff --output diff.txt a.csv b.csv
+  merklediff --limit 100 large_a.csv large_b.csv`,
 	Args: cobra.ExactArgs(2),
 	RunE: runDiff,
 }
@@ -48,9 +58,23 @@ Examples:
 func init() {
 	rootCmd.Flags().IntSliceVarP(&keyColumns, "key", "k", []int{0}, "Column indices for primary key (0-indexed)")
 	rootCmd.Flags().BoolVarP(&outputJSON, "json", "j", false, "Output as JSON (for pipelines)")
+	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Write results to file instead of stdout")
+	rootCmd.Flags().IntVarP(&limit, "limit", "l", 20, "Limit number of changes shown (0 = no limit)")
 	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only output diff results, no headers")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show detailed tree info")
 	rootCmd.Flags().BoolVar(&exitZero, "exit-zero", false, "Always exit 0 (use for Airflow/pipelines)")
+
+	rootCmd.AddCommand(versionCmd)
+}
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("merklediff %s\n", version)
+		fmt.Printf("  commit: %s\n", commit)
+		fmt.Printf("  built:  %s\n", date)
+	},
 }
 
 // DiffResult represents the output for JSON mode
@@ -153,10 +177,23 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		Summary:   summarize(changes),
 	}
 
-	if outputJSON {
-		return outputAsJSON(result)
+	// Determine output destination
+	var out *os.File
+	if outputFile != "" {
+		f, err := os.Create(outputFile)
+		if err != nil {
+			return fmt.Errorf("failed to create output file: %w", err)
+		}
+		defer f.Close()
+		out = f
+	} else {
+		out = os.Stdout
 	}
-	return outputAsText(result, treeA, treeB)
+
+	if outputJSON {
+		return outputAsJSON(out, result)
+	}
+	return outputAsText(out, result, treeA, treeB)
 }
 
 func collectChanges(ranges []tree.KeyRange, mapA, mapB map[string]reader.Row, schema reader.Schema) []Change {
@@ -242,70 +279,89 @@ func summarize(changes []Change) DiffSummary {
 	return s
 }
 
-func outputAsJSON(result DiffResult) error {
-	enc := json.NewEncoder(os.Stdout)
+func outputAsJSON(out *os.File, result DiffResult) error {
+	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(result)
 }
 
-func outputAsText(result DiffResult, treeA, treeB *tree.MerkleTree) error {
+func outputAsText(out *os.File, result DiffResult, treeA, treeB *tree.MerkleTree) error {
 	if !quiet {
-		fmt.Printf("\n  File A: %s (%d rows)\n", result.FileA, result.RowCountA)
-		fmt.Printf("  File B: %s (%d rows)\n", result.FileB, result.RowCountB)
+		fmt.Fprintf(out, "\n  File A: %s (%d rows)\n", result.FileA, result.RowCountA)
+		fmt.Fprintf(out, "  File B: %s (%d rows)\n", result.FileB, result.RowCountB)
 
 		// Show detected schema
-		fmt.Println("\n─────────────────────")
-		fmt.Println("  Detected Schema")
-		fmt.Println("─────────────────────")
+		fmt.Fprintln(out, "\n─────────────────────")
+		fmt.Fprintln(out, "  Detected Schema")
+		fmt.Fprintln(out, "─────────────────────")
 		for _, col := range result.Schema {
-			fmt.Printf("  %-20s %s\n", col.Name, col.Type)
+			fmt.Fprintf(out, "  %-20s %s\n", col.Name, col.Type)
 		}
 	}
 
 	if verbose {
 		rootA, rootB := treeA.GetRoot(), treeB.GetRoot()
-		fmt.Println("\n────────────────────────")
-		fmt.Println("  Merkle Trees Details	")
-		fmt.Println("────────────────────────")
-		fmt.Printf("  Tree A: %s... (keys %s --> %s)\n",
+		fmt.Fprintln(out, "\n────────────────────────")
+		fmt.Fprintln(out, "  Merkle Trees Details")
+		fmt.Fprintln(out, "────────────────────────")
+		fmt.Fprintf(out, "  Tree A: %s... (keys %s --> %s)\n",
 			hex.EncodeToString(rootA.GetHash())[:16],
 			string(rootA.GetStartKey()), string(rootA.GetEndKey()))
-		fmt.Printf("  Tree B: %s... (keys %s --> %s)\n",
+		fmt.Fprintf(out, "  Tree B: %s... (keys %s --> %s)\n",
 			hex.EncodeToString(rootB.GetHash())[:16],
 			string(rootB.GetStartKey()), string(rootB.GetEndKey()))
 	}
 
 	if !quiet {
-		fmt.Println("\n─────────────")
-		fmt.Println("  Changes")
-		fmt.Println("─────────────")
+		fmt.Fprintln(out, "\n─────────────")
+		fmt.Fprintln(out, "  Changes")
+		fmt.Fprintln(out, "─────────────")
 	}
 
 	if result.Identical {
-		fmt.Println("\n Files are identical :)")
+		fmt.Fprintln(out, "\n Files are identical :)")
 	} else {
-		for i, c := range result.Changes {
+		// Determine how many changes to show
+		showCount := len(result.Changes)
+		truncated := false
+		if limit > 0 && showCount > limit {
+			showCount = limit
+			truncated = true
+		}
+
+		for i := 0; i < showCount; i++ {
+			c := result.Changes[i]
 			switch c.Type {
 			case "added":
-				fmt.Printf("\n| Row: %d | ADDED key %q\n", i+1, c.Key)
-				fmt.Printf("      --> %v\n", c.Values)
+				fmt.Fprintf(out, "\n| Row: %d | ADDED key %q\n", i+1, c.Key)
+				fmt.Fprintf(out, "      --> %v\n", c.Values)
 			case "removed":
-				fmt.Printf("\n| Row: %d | REMOVED key %q\n", i+1, c.Key)
-				fmt.Printf("      --> %v\n", c.Values)
+				fmt.Fprintf(out, "\n| Row: %d | REMOVED key %q\n", i+1, c.Key)
+				fmt.Fprintf(out, "      --> %v\n", c.Values)
 			case "changed":
-				fmt.Printf("\n| Row: %d | CHANGED key %q\n", i+1, c.Key)
+				fmt.Fprintf(out, "\n| Row: %d | CHANGED key %q\n", i+1, c.Key)
 				for name, f := range c.Fields {
-					fmt.Printf("      --> %s: From %v :: To %v\n", name, f.From, f.To)
+					fmt.Fprintf(out, "      --> %s: From %v :: To %v\n", name, f.From, f.To)
 				}
 			}
+		}
+
+		if truncated {
+			fmt.Fprintf(out, "\n  ... and %d more changes (use --output to write all to file)\n",
+				len(result.Changes)-limit)
 		}
 	}
 
 	if !quiet {
-		fmt.Println("\n───────────────────────────────────────────────────────────────")
-		fmt.Printf("  Summary: %d added, %d removed, %d changed (%d total)\n",
+		fmt.Fprintln(out, "\n───────────────────────────────────────────────────────────────")
+		fmt.Fprintf(out, "  Summary: %d added, %d removed, %d changed (%d total)\n",
 			result.Summary.Added, result.Summary.Removed, result.Summary.Changed, result.Summary.Total)
-		fmt.Println("───────────────────────────────────────────────────────────────")
+		fmt.Fprintln(out, "───────────────────────────────────────────────────────────────")
+	}
+
+	// Print where output was written if using file
+	if outputFile != "" {
+		fmt.Printf("Results written to: %s\n", outputFile)
 	}
 
 	// Exit with code 1 if differences found (unless --exit-zero is set)
