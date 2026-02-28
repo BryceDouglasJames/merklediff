@@ -22,14 +22,8 @@ func (c *Chunker) Chunk(data []byte) [][]byte {
 	chunks := make([][]byte, chunkCount)
 
 	for i := range chunks {
-		start := i * c.chunkSize
-		if start > len(data) {
-			start = len(data)
-		}
-		end := start + c.chunkSize
-		if end > len(data) {
-			end = len(data)
-		}
+		start := min(i * c.chunkSize, len(data))
+		end := min(start + c.chunkSize, len(data))
 		chunks[i] = data[start:end]
 	}
 	return chunks

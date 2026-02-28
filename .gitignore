@@ -4,6 +4,7 @@
 *.dll
 *.so
 *.dylib
+merklediff
 
 # Go build artifacts
 *.test
