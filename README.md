@@ -1,5 +1,11 @@
 # merklediff
 
+[![Go Version](https://img.shields.io/github/go-mod/go-version/BryceDouglasJames/merklediff)](https://go.dev/)
+[![CI](https://github.com/BryceDouglasJames/merklediff/actions/workflows/ci.yaml/badge.svg)](https://github.com/BryceDouglasJames/merklediff/actions/workflows/ci.yaml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/BryceDouglasJames/merklediff)](https://goreportcard.com/report/github.com/BryceDouglasJames/merklediff)
+[![Release](https://img.shields.io/github/v/release/BryceDouglasJames/merklediff)](https://github.com/BryceDouglasJames/merklediff/releases/latest)
+[![License](https://img.shields.io/github/license/BryceDouglasJames/merklediff)](LICENSE)
+
 Fast, scalable dataset diffing using Merkle trees.
 
 ## Features
