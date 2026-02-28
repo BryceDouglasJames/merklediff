@@ -1,0 +1,59 @@
+# GoReleaser configuration
+# Run: goreleaser release --snapshot --clean (local test)
+# Run: goreleaser release (actual release, needs GITHUB_TOKEN)
+
+version: 2
+
+project_name: merklediff
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: merklediff
+    main: ./cmd/merklediff
+    binary: merklediff
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: BryceDouglasJames
+    name: merklediff
+  draft: false
+  prerelease: auto
