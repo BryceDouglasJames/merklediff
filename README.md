@@ -1,10 +1,17 @@
 # merklediff
 
-Fast dataset comparison using Merkle trees. Efficiently identifies added, removed, and changed rows between two data sources.
+Fast, scalable dataset diffing using Merkle trees.
+
+## Features
+
+- **CSV and PostgreSQL** support
+- **O(k log n)** comparison for k changes in n rows
+- **Pipeline-friendly** with JSON output and exit codes
+- **Field-level diffs** showing exactly what changed
 
 ## Why Merkle Trees?
 
-Traditional diff tools compare files line-by-line, which is O(n) for the entire dataset. Merkle trees enable **logarithmic comparison** — if two datasets are mostly identical, we only examine the branches that differ.
+Traditional diff tools compare line-by-line (O(n)). Merkle trees enable **logarithmic comparison** — only examine branches that differ.
 
 ```
            Root Hash
@@ -14,89 +21,94 @@ Traditional diff tools compare files line-by-line, which is O(n) for the entire 
    H(1-2) H(3-4) H(5-6) H(7-8)  ← Only check changed subtrees
 ```
 
-| Operation | Time Complexity |
-|-----------|-----------------|
+| Operation | Complexity |
+|-----------|------------|
 | Build tree | O(n) |
-| Compare identical datasets | O(1) |
+| Compare identical | O(1) |
 | Compare with k changes | O(k log n) |
 
 ## Installation
 
-### From Releases
-
 ```bash
-# macOS (Apple Silicon)
-curl -LO https://github.com/BryceDouglasJames/merklediff/releases/latest/download/merklediff_darwin_arm64.tar.gz
-tar -xzf merklediff_darwin_arm64.tar.gz
-sudo mv merklediff /usr/local/bin/
-
-# macOS (Intel)
-curl -LO https://github.com/BryceDouglasJames/merklediff/releases/latest/download/merklediff_darwin_amd64.tar.gz
-
-# Linux (amd64)
-curl -LO https://github.com/BryceDouglasJames/merklediff/releases/latest/download/merklediff_linux_amd64.tar.gz
-
-# Linux (arm64)
-curl -LO https://github.com/BryceDouglasJames/merklediff/releases/latest/download/merklediff_linux_arm64.tar.gz
-```
-
-### From Source
-
-```bash
+# From source
 go install github.com/BryceDouglasJames/merklediff/cmd/merklediff@latest
-```
 
-### Verify Installation
-
-```bash
-merklediff version
+# Or download from releases
+curl -LO https://github.com/BryceDouglasJames/merklediff/releases/latest/download/merklediff_darwin_arm64.tar.gz
+tar -xzf merklediff_*.tar.gz && sudo mv merklediff /usr/local/bin/
 ```
 
 ## Usage
 
-```bash
-merklediff <file-a> <file-b> [flags]
-```
-
-### Examples
+### CSV Files
 
 ```bash
-# Compare two CSV files
-merklediff users_v1.csv users_v2.csv
+# Basic comparison
+merklediff old.csv new.csv
 
 # Specify primary key column (0-indexed)
-merklediff --key 0 old.csv new.csv
+merklediff --key 0 users_v1.csv users_v2.csv
 
-# Composite key (multiple columns)
-merklediff --key 0,1 sales_q1.csv sales_q2.csv
-
-# JSON output for pipelines
-merklediff --json file_a.csv file_b.csv
-
-# Quiet mode (changes only)
-merklediff --quiet old.csv new.csv
-
-# For CI/CD pipelines (don't fail on diff)
-merklediff --exit-zero --json a.csv b.csv > diff.json
+# Composite key
+merklediff --key 0,1 sales.csv sales_updated.csv
 ```
 
-### Flags
+### PostgreSQL
+
+```bash
+# Compare two tables
+merklediff postgres \
+  --dsn "postgres://user:pass@localhost/db?sslmode=disable" \
+  --table-a users \
+  --table-b users_backup \
+  --key id
+
+# Compare with custom queries
+merklediff postgres \
+  --dsn "postgres://localhost/db" \
+  --query-a "SELECT * FROM orders WHERE status = 'active'" \
+  --query-b "SELECT * FROM orders_archive WHERE status = 'active'" \
+  --key order_id
+```
+
+### Pipeline Usage (Airflow, CI/CD)
+
+```bash
+# Quiet mode - outputs only summary
+merklediff --quiet old.csv new.csv
+# Output: 2 added, 1 removed, 3 changed (6 total)
+
+# JSON output
+merklediff --json a.csv b.csv > diff.json
+
+# Don't fail on differences
+merklediff --exit-zero --json --output diff.json a.csv b.csv
+```
+
+## Flags
+
+### CSV Mode
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--key` | `-k` | Column indices for primary key (default: `0`) |
 | `--json` | `-j` | Output as JSON |
-| `--quiet` | `-q` | Suppress headers, show only changes |
+| `--quiet` | `-q` | Output only summary line |
+| `--output` | `-o` | Write results to file |
+| `--limit` | `-l` | Limit changes shown (default: `20`) |
 | `--verbose` | `-v` | Show Merkle tree details |
-| `--exit-zero` | | Always exit 0 (for pipelines) |
-| `--help` | `-h` | Help |
+| `--exit-zero` | | Always exit 0 |
 
-### Exit Codes
+### Postgres Mode
 
-| Code | Meaning |
-|------|---------|
-| `0` | Files identical (or `--exit-zero` used) |
-| `1` | Differences found |
+| Flag | Description |
+|------|-------------|
+| `--dsn` | Connection string (required) |
+| `--table-a`, `--table-b` | Table names to compare |
+| `--query-a`, `--query-b` | Custom SQL queries |
+| `--key` | Primary key column name(s) (required) |
+| `--where` | WHERE clause for both tables |
+| `--order-by` | ORDER BY clause |
 
 ## Output Example
 
@@ -111,7 +123,6 @@ merklediff --exit-zero --json a.csv b.csv > diff.json
   name                 string
   email                string
   salary               int
-  active               bool
 
 ─────────────
   Changes
@@ -119,27 +130,27 @@ merklediff --exit-zero --json a.csv b.csv > diff.json
 
 | Row: 1 | CHANGED key "42"
       --> salary: From 75000 :: To 82000
-      --> active: From true :: To false
 
 | Row: 2 | ADDED key "1001"
-      --> [1001 Alice alice@company.com 95000 true]
+      --> [1001 Alice alice@company.com 95000]
 
 | Row: 3 | REMOVED key "500"
-      --> [500 Bob bob@old.com 60000 false]
+      --> [500 Bob bob@old.com 60000]
 
 ───────────────────────────────────────────────────────────────
   Summary: 1 added, 1 removed, 1 changed (3 total)
+───────────────────────────────────────────────────────────────
 ```
 
 ## Development
 
 ```bash
+make help              # Show all targets
 make test              # Run tests
-make lint              # Run go vet
 make build             # Build for current platform
-make release-snapshot  # Test release locally
+make release-snapshot  # Test GoReleaser locally
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT

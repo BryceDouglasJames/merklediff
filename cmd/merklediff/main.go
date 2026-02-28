@@ -21,7 +21,7 @@ var (
 )
 
 var (
-	// CLI flags
+	// CLI flags (shared)
 	keyColumns []int
 	outputJSON bool
 	outputFile string
@@ -29,6 +29,16 @@ var (
 	verbose    bool
 	exitZero   bool
 	limit      int
+
+	// Postgres flags
+	pgDSN      string
+	pgTableA   string
+	pgTableB   string
+	pgQueryA   string
+	pgQueryB   string
+	pgKeyNames []string
+	pgWhere    string
+	pgOrderBy  string
 )
 
 func main() {
@@ -60,11 +70,31 @@ func init() {
 	rootCmd.Flags().BoolVarP(&outputJSON, "json", "j", false, "Output as JSON (for pipelines)")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Write results to file instead of stdout")
 	rootCmd.Flags().IntVarP(&limit, "limit", "l", 20, "Limit number of changes shown (0 = no limit)")
-	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only output diff results, no headers")
+	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only output summary line (for scripts/pipelines)")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show detailed tree info")
 	rootCmd.Flags().BoolVar(&exitZero, "exit-zero", false, "Always exit 0 (use for Airflow/pipelines)")
 
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(postgresCmd)
+
+	// Postgres command flags
+	postgresCmd.Flags().StringVar(&pgDSN, "dsn", "", "PostgreSQL connection string (required)")
+	postgresCmd.Flags().StringVar(&pgTableA, "table-a", "", "Source table name")
+	postgresCmd.Flags().StringVar(&pgTableB, "table-b", "", "Target table name")
+	postgresCmd.Flags().StringVar(&pgQueryA, "query-a", "", "Source SQL query (alternative to --table-a)")
+	postgresCmd.Flags().StringVar(&pgQueryB, "query-b", "", "Target SQL query (alternative to --table-b)")
+	postgresCmd.Flags().StringSliceVar(&pgKeyNames, "key", nil, "Primary key column names (required)")
+	postgresCmd.Flags().StringVar(&pgWhere, "where", "", "Optional WHERE clause")
+	postgresCmd.Flags().StringVar(&pgOrderBy, "order-by", "", "Optional ORDER BY clause")
+	postgresCmd.Flags().BoolVarP(&outputJSON, "json", "j", false, "Output as JSON")
+	postgresCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Write results to file")
+	postgresCmd.Flags().IntVarP(&limit, "limit", "l", 20, "Limit changes shown (0 = no limit)")
+	postgresCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only output summary line")
+	postgresCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show detailed tree info")
+	postgresCmd.Flags().BoolVar(&exitZero, "exit-zero", false, "Always exit 0")
+
+	_ = postgresCmd.MarkFlagRequired("dsn")
+	_ = postgresCmd.MarkFlagRequired("key")
 }
 
 var versionCmd = &cobra.Command{
@@ -75,6 +105,30 @@ var versionCmd = &cobra.Command{
 		fmt.Printf("  commit: %s\n", commit)
 		fmt.Printf("  built:  %s\n", date)
 	},
+}
+
+var postgresCmd = &cobra.Command{
+	Use:   "postgres",
+	Short: "Compare two PostgreSQL tables using Merkle tree diff",
+	Long: `Compare two PostgreSQL tables or queries using Merkle trees.
+
+Examples:
+  # Compare two tables
+  merklediff postgres --dsn "postgres://user:pass@localhost/db" \
+    --table-a users --table-b users_backup --key id
+
+  # Compare with custom queries
+  merklediff postgres --dsn "postgres://localhost/db?sslmode=disable" \
+    --query-a "SELECT * FROM users WHERE active = true" \
+    --query-b "SELECT * FROM users_archive WHERE active = true" \
+    --key id
+
+  # With WHERE and ORDER BY
+  merklediff postgres --dsn "postgres://localhost/db" \
+    --table-a orders --table-b orders_replica \
+    --key order_id --where "created_at > '2024-01-01'" \
+    --order-by "order_id"`,
+	RunE: runPostgresDiff,
 }
 
 // DiffResult represents the output for JSON mode
@@ -196,6 +250,119 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	return outputAsText(out, result, treeA, treeB)
 }
 
+func runPostgresDiff(cmd *cobra.Command, args []string) error {
+	// Validate inputs
+	if pgTableA == "" && pgQueryA == "" {
+		return fmt.Errorf("either --table-a or --query-a is required")
+	}
+	if pgTableB == "" && pgQueryB == "" {
+		return fmt.Errorf("either --table-b or --query-b is required")
+	}
+
+	// Build config for source
+	configA := reader.PostgresConfig{
+		DSN:        pgDSN,
+		Table:      pgTableA,
+		Query:      pgQueryA,
+		KeyColumns: pgKeyNames,
+		Where:      pgWhere,
+		OrderBy:    pgOrderBy,
+	}
+
+	// Build config for target
+	configB := reader.PostgresConfig{
+		DSN:        pgDSN,
+		Table:      pgTableB,
+		Query:      pgQueryB,
+		KeyColumns: pgKeyNames,
+		Where:      pgWhere,
+		OrderBy:    pgOrderBy,
+	}
+
+	// Connect and read source
+	readerA, err := reader.NewPostgresReader(configA)
+	if err != nil {
+		return fmt.Errorf("failed to connect to source: %w", err)
+	}
+	defer readerA.Close()
+
+	rowsA, err := reader.CollectRows(readerA)
+	if err != nil {
+		return fmt.Errorf("failed to read source: %w", err)
+	}
+	schemaA := readerA.Schema()
+
+	// Connect and read target
+	readerB, err := reader.NewPostgresReader(configB)
+	if err != nil {
+		return fmt.Errorf("failed to connect to target: %w", err)
+	}
+	defer readerB.Close()
+
+	rowsB, err := reader.CollectRows(readerB)
+	if err != nil {
+		return fmt.Errorf("failed to read target: %w", err)
+	}
+
+	// Build trees
+	treeA := tree.NewMerkleTreeFromRows(toTreeRows(rowsA))
+	treeB := tree.NewMerkleTreeFromRows(toTreeRows(rowsB))
+
+	// Compare
+	diff := tree.NewDiff(treeA, treeB)
+	diff.Compare()
+
+	// Build result
+	rowMapA := buildRowMap(rowsA)
+	rowMapB := buildRowMap(rowsB)
+	changes := collectChanges(diff.GetRanges(), rowMapA, rowMapB, schemaA)
+
+	// Build schema info
+	schemaInfo := make([]ColumnInfo, len(schemaA.Columns))
+	for i, col := range schemaA.Columns {
+		schemaInfo[i] = ColumnInfo{Name: col.Name, Type: col.Type.String()}
+	}
+
+	// Source name for display
+	sourceA := pgTableA
+	if sourceA == "" {
+		sourceA = "query_a"
+	}
+	sourceB := pgTableB
+	if sourceB == "" {
+		sourceB = "query_b"
+	}
+
+	result := DiffResult{
+		FileA:     sourceA,
+		FileB:     sourceB,
+		RowCountA: len(rowsA),
+		RowCountB: len(rowsB),
+		Schema:    schemaInfo,
+		Identical: len(changes) == 0,
+		Changes:   changes,
+		Summary:   summarize(changes),
+	}
+
+	// Determine output destination
+	var out *os.File
+	if outputFile != "" {
+		f, err := os.Create(outputFile)
+		if err != nil {
+			return fmt.Errorf("failed to create output file: %w", err)
+		}
+		defer f.Close()
+		out = f
+	} else {
+		out = os.Stdout
+	}
+
+	if outputJSON {
+		return outputAsJSON(out, result)
+	}
+	return outputAsText(out, result, treeA, treeB)
+}
+
 func collectChanges(ranges []tree.KeyRange, mapA, mapB map[string]reader.Row, schema reader.Schema) []Change {
 	processed := make(map[string]bool)
 	var changes []Change
@@ -286,17 +453,26 @@ func outputAsJSON(out *os.File, result DiffResult) error {
 }
 
 func outputAsText(out *os.File, result DiffResult, treeA, treeB *tree.MerkleTree) error {
-	if !quiet {
-		fmt.Fprintf(out, "\n  File A: %s (%d rows)\n", result.FileA, result.RowCountA)
-		fmt.Fprintf(out, "  File B: %s (%d rows)\n", result.FileB, result.RowCountB)
-
-		// Show detected schema
-		fmt.Fprintln(out, "\n─────────────────────")
-		fmt.Fprintln(out, "  Detected Schema")
-		fmt.Fprintln(out, "─────────────────────")
-		for _, col := range result.Schema {
-			fmt.Fprintf(out, "  %-20s %s\n", col.Name, col.Type)
+	// Quiet mode: only output the summary line
+	if quiet {
+		if result.Identical {
+			fmt.Fprintln(out, "identical")
+		} else {
+			fmt.Fprintf(out, "%d added, %d removed, %d changed (%d total)\n",
+				result.Summary.Added, result.Summary.Removed, result.Summary.Changed, result.Summary.Total)
 		}
+		return nil
+	}
+
+	fmt.Fprintf(out, "\n  File A: %s (%d rows)\n", result.FileA, result.RowCountA)
+	fmt.Fprintf(out, "  File B: %s (%d rows)\n", result.FileB, result.RowCountB)
+
+	// Show detected schema
+	fmt.Fprintln(out, "\n─────────────────────")
+	fmt.Fprintln(out, "  Detected Schema")
+	fmt.Fprintln(out, "─────────────────────")
+	for _, col := range result.Schema {
+		fmt.Fprintf(out, "  %-20s %s\n", col.Name, col.Type)
 	}
 
 	if verbose {
@@ -312,11 +488,9 @@ func outputAsText(out *os.File, result DiffResult, treeA, treeB *tree.MerkleTree
 			string(rootB.GetStartKey()), string(rootB.GetEndKey()))
 	}
 
-	if !quiet {
-		fmt.Fprintln(out, "\n─────────────")
-		fmt.Fprintln(out, "  Changes")
-		fmt.Fprintln(out, "─────────────")
-	}
+	fmt.Fprintln(out, "\n─────────────")
+	fmt.Fprintln(out, "  Changes")
+	fmt.Fprintln(out, "─────────────")
 
 	if result.Identical {
 		fmt.Fprintln(out, "\n Files are identical :)")
@@ -352,12 +526,10 @@ func outputAsText(out *os.File, result DiffResult, treeA, treeB *tree.MerkleTree
 		}
 	}
 
-	if !quiet {
-		fmt.Fprintln(out, "\n───────────────────────────────────────────────────────────────")
-		fmt.Fprintf(out, "  Summary: %d added, %d removed, %d changed (%d total)\n",
-			result.Summary.Added, result.Summary.Removed, result.Summary.Changed, result.Summary.Total)
-		fmt.Fprintln(out, "───────────────────────────────────────────────────────────────")
-	}
+	fmt.Fprintln(out, "\n───────────────────────────────────────────────────────────────")
+	fmt.Fprintf(out, "  Summary: %d added, %d removed, %d changed (%d total)\n",
+		result.Summary.Added, result.Summary.Removed, result.Summary.Changed, result.Summary.Total)
+	fmt.Fprintln(out, "───────────────────────────────────────────────────────────────")
 
 	// Print where output was written if using file
 	if outputFile != "" {
